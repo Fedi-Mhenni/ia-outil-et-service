@@ -94,7 +94,37 @@ async function pump() {
 /** N1 : produit la réponse en streaming et la diffuse à tout le salon. */
 async function answer(job: Job) {
   // TODO : (N1) Construire les messages (SYSTEM, puis un message user contenant contexte() et « Réponds à <asker> »), diffuser ia_start, relayer chaque delta en ia_delta, puis ia_done (tokens, ou cancelled si AbortError). Enregistrer la réponse complète dans le salon (room.push, sans rediffuser).
-  broadcast({ type: "error", message: `(@ia pas encore branchée — demandé par ${job.asker})` });
+  const messages: Msg[] = [
+    { role: "system", content: SYSTEM },
+    { role: "user", content: `${contexte()}\n\nRéponds à ${job.asker}.` },
+  ];
+
+  broadcast({ type: "ia_start", id: job.id, for: job.asker });
+  let full = "";
+  try {
+    let tokens: number | undefined;
+    for await (const part of chatStream(messages, { signal: job.ctrl.signal, maxTokens: 400 })) {
+      if ("delta" in part) {
+        full += part.delta;
+        broadcast({ type: "ia_delta", id: job.id, text: part.delta });
+      } else {
+        tokens = part.usage.total_tokens;
+      }
+    }
+    broadcast({ type: "ia_done", id: job.id, tokens });
+  } catch (e) {
+    if ((e as Error).name === "AbortError") {
+      broadcast({ type: "ia_done", id: job.id, cancelled: true });
+    } else {
+      broadcast({ type: "ia_done", id: job.id });
+      broadcast({ type: "error", message: `@ia n'a pas pu répondre : ${(e as Error).message.slice(0, 150)}` });
+    }
+  } finally {
+    if (full) {
+      room.push({ from: "ia", text: full, at: Date.now() });
+      if (room.length > 200) room.shift();
+    }
+  }
 }
 
 /** N2 : /stop annule la réponse en cours, seulement si on l'a demandée. */
