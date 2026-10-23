@@ -83,12 +83,34 @@ const lastAsk = new Map<string, number>(); // anti-abus : un @ia par personne to
 /** N1 + N2 : met une question en file et traite la file une réponse à la fois. */
 function ask(asker: string) {
   // TODO : (N2) Refuser si la personne a interpellé l'IA il y a moins de 10 s (lastAsk) ; sinon créer un Job, l'ajouter à la file, diffuser la taille de la file (ia_queue), puis appeler pump().
-  void answer({ id: crypto.randomUUID().slice(0, 8), asker, ctrl: new AbortController() });
+  const now = Date.now();
+  const last = lastAsk.get(asker) ?? 0;
+  if (now - last < 10_000) {
+    const reste = Math.ceil((10_000 - (now - last)) / 1000);
+    return post("salon", `${asker}, patientez encore ${reste} s avant de réinterpeller @ia.`);
+  }
+  lastAsk.set(asker, now);
+
+  queue.push({ id: crypto.randomUUID().slice(0, 8), asker, ctrl: new AbortController() });
+  broadcast({ type: "ia_queue", size: queue.length });
+  void pump();
 }
 
 async function pump() {
   // TODO : (N2) Si rien ne tourne et que la file n'est pas vide : sortir le premier Job, le marquer running, attendre answer(job), remettre running à null, diffuser ia_queue et recommencer.
-  throw new Error("À implémenter : voir la consigne ci-dessus");
+  if (running) return;
+  const job = queue.shift();
+  if (!job) return;
+
+  running = job;
+  broadcast({ type: "ia_queue", size: queue.length });
+  try {
+    await answer(job);
+  } finally {
+    running = null;
+    broadcast({ type: "ia_queue", size: queue.length });
+    void pump();
+  }
 }
 
 /** N1 : produit la réponse en streaming et la diffuse à tout le salon. */
@@ -130,7 +152,11 @@ async function answer(job: Job) {
 /** N2 : /stop annule la réponse en cours, seulement si on l'a demandée. */
 function stop(pseudo: string) {
   // TODO : (N2) Si la réponse en cours a été demandée par pseudo, l'annuler ; sinon prévenir que seul le demandeur peut l'arrêter.
-  post("salon", "/stop : pas encore implémenté");
+  if (!running) return post("salon", "/stop : aucune réponse de @ia en cours.");
+  if (running.asker !== pseudo) {
+    return post("salon", `/stop : seul ${running.asker} peut arrêter cette réponse.`);
+  }
+  running.ctrl.abort();
 }
 
 // N3 : /resume — sortie structurée, validée par zod.
